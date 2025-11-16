@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Camera Stream</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Streamer View -->
+        <div id="streamerView" class="view hidden">
+            <h1>🎥 Start Your Live Stream</h1>
+            
+            <div class="stream-setup">
+                <button id="startStreamBtn" class="btn btn-primary">Go Live</button>
+                <button id="stopStreamBtn" class="btn btn-danger hidden">End Stream</button>
+            </div>
+
+            <div class="video-container">
+                <div class="video-wrapper">
+                    <h3>Your Camera</h3>
+                    <video id="localVideo" autoplay muted playsinline></video>
+                </div>
+            </div>
+
+            <div class="stream-info hidden">
+                <h3>Share this link:</h3>
+                <div class="share-link">
+                    <input type="text" id="streamLink" readonly>
+                    <button id="copyLinkBtn" class="btn btn-secondary">Copy</button>
+                </div>
+                <p class="viewer-count">Viewers: <span id="viewerCount">0</span></p>
+            </div>
+        </div>
+
+        <!-- Viewer View -->
+        <div id="viewerView" class="view">
+            <h1>📹 Live Stream Viewer</h1>
+            
+            <div class="join-stream">
+                <input type="text" id="streamIdInput" placeholder="Enter Stream ID">
+                <button id="joinStreamBtn" class="btn btn-primary">Watch Stream</button>
+            </div>
+
+            <div class="video-container">
+                <div class="video-wrapper">
+                    <h3>Live Stream</h3>
+                    <video id="remoteVideo" autoplay playsinline></video>
+                    <div id="noStreamMessage" class="no-stream">
+                        <p>Enter a Stream ID to start watching</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="stream-status">
+                <p id="connectionStatus">Disconnected</p>
+            </div>
+        </div>
+
+        <!-- Mode Toggle -->
+        <div class="mode-toggle">
+            <button id="switchToStreamer" class="btn btn-outline">I want to stream</button>
+            <button id="switchToViewer" class="btn btn-outline">I want to watch</button>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
