@@ -13,7 +13,7 @@ const io = socketIo(server, {
     origin: "*",
     methods: ["GET", "POST"]
   },
-  transports: ['websocket', 'polling'] // Ensure both transports
+  transports: ['websocket', 'polling']
 });
 
 // Middleware
@@ -21,8 +21,9 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Store active streams
+// Store active streams and peer connections
 const activeStreams = new Map();
+const peerConnections = new Map();
 
 // Routes
 app.get('/', (req, res) => {
@@ -32,26 +33,9 @@ app.get('/', (req, res) => {
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'OK', 
-    message: 'Server is running',
-    timestamp: new Date().toISOString(),
     streams: activeStreams.size,
     activeStreams: Array.from(activeStreams.keys())
   });
-});
-
-// API to check if stream exists
-app.get('/api/stream/:id', (req, res) => {
-  const streamId = req.params.id;
-  const stream = activeStreams.get(streamId);
-  if (stream) {
-    res.json({ 
-      exists: true, 
-      viewers: stream.viewers.size,
-      streamer: stream.streamer 
-    });
-  } else {
-    res.json({ exists: false });
-  }
 });
 
 // Socket.io connection handling
@@ -75,7 +59,7 @@ io.on('connection', (socket) => {
   });
 
   // Viewer joins a stream
-  socket.on('join-stream', (streamId) => {
+  socket.on('join-stream', async (streamId) => {
     console.log(`👀 Viewer ${socket.id} trying to join stream: ${streamId}`);
     
     const stream = activeStreams.get(streamId);
@@ -84,7 +68,6 @@ io.on('connection', (socket) => {
       socket.join(streamId);
       
       console.log(`✅ Viewer ${socket.id} joined stream ${streamId}`);
-      console.log(`👥 Viewers in ${streamId}:`, Array.from(stream.viewers));
       
       // Notify streamer that a viewer joined
       socket.to(stream.streamer).emit('viewer-joined', {
@@ -97,6 +80,12 @@ io.on('connection', (socket) => {
         streamId,
         streamerId: stream.streamer
       });
+
+      // Request the streamer to create an offer
+      socket.to(stream.streamer).emit('create-offer', {
+        viewerId: socket.id,
+        streamId: streamId
+      });
       
     } else {
       console.log(`❌ Stream not found: ${streamId}`);
@@ -106,42 +95,32 @@ io.on('connection', (socket) => {
 
   // WebRTC signaling - Offer from streamer to viewer
   socket.on('offer', (data) => {
-    console.log(`📨 Offer from ${socket.id} for stream ${data.streamId}`);
-    socket.to(data.streamId).emit('offer', {
-      ...data,
+    console.log(`📨 Offer from ${socket.id} to ${data.targetViewerId}`);
+    socket.to(data.targetViewerId).emit('offer', {
+      offer: data.offer,
+      streamId: data.streamId,
       from: socket.id
     });
   });
 
   // WebRTC signaling - Answer from viewer to streamer
   socket.on('answer', (data) => {
-    console.log(`📨 Answer from ${socket.id} for stream ${data.streamId}`);
-    socket.to(data.streamId).emit('answer', {
-      ...data,
+    console.log(`📨 Answer from ${socket.id} to ${data.targetStreamerId}`);
+    socket.to(data.targetStreamerId).emit('answer', {
+      answer: data.answer,
+      streamId: data.streamId,
       from: socket.id
     });
   });
 
   // WebRTC signaling - ICE candidates
   socket.on('ice-candidate', (data) => {
-    console.log(`❄️ ICE candidate from ${socket.id} for stream ${data.streamId}`);
-    socket.to(data.streamId).emit('ice-candidate', {
-      ...data,
+    console.log(`❄️ ICE candidate from ${socket.id} to ${data.target}`);
+    socket.to(data.target).emit('ice-candidate', {
+      candidate: data.candidate,
+      streamId: data.streamId,
       from: socket.id
     });
-  });
-
-  // Handle viewer leaving stream
-  socket.on('leave-stream', (streamId) => {
-    const stream = activeStreams.get(streamId);
-    if (stream && stream.viewers.has(socket.id)) {
-      stream.viewers.delete(socket.id);
-      socket.to(stream.streamer).emit('viewer-left', {
-        viewerId: socket.id,
-        viewerCount: stream.viewers.size
-      });
-      console.log(`🚪 Viewer ${socket.id} left stream ${streamId}`);
-    }
   });
 
   // Handle disconnection
@@ -161,21 +140,9 @@ io.on('connection', (socket) => {
           viewerId: socket.id,
           viewerCount: stream.viewers.size
         });
-        console.log(`🚪 Viewer ${socket.id} disconnected from ${streamId}`);
       }
     }
   });
-
-  // Error handling
-  socket.on('error', (error) => {
-    console.error('Socket error:', error);
-  });
-});
-
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error('Error:', err);
-  res.status(500).json({ error: 'Something went wrong!' });
 });
 
 const PORT = process.env.PORT || 3000;
@@ -184,16 +151,6 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`
 🚀 Camera Streaming Server Started!
 📍 Local: http://localhost:${PORT}
-🌐 Network: http://YOUR_IP:${PORT}
-📊 Health check: http://localhost:${PORT}/health
+🌐 Remote: https://your-app.onrender.com
   `);
-});
-
-// Handle graceful shutdown
-process.on('SIGINT', () => {
-  console.log('\n🛑 Shutting down server gracefully...');
-  server.close(() => {
-    console.log('✅ Server closed');
-    process.exit(0);
-  });
 });

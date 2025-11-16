@@ -6,11 +6,18 @@ class CameraStreamApp {
         this.currentStreamId = null;
         this.isStreamer = false;
         this.streamerId = null;
+        this.viewerId = null;
+        this.hasUserInteracted = false;
         
         this.initializeElements();
         this.setupEventListeners();
         this.setupSocket();
         this.checkUrlForStreamId();
+        
+        // Add global click handler for user interaction
+        document.addEventListener('click', () => {
+            this.hasUserInteracted = true;
+        }, { once: true });
     }
 
     initializeElements() {
@@ -29,6 +36,10 @@ class CameraStreamApp {
         this.connectionStatus = document.getElementById('connectionStatus');
         this.switchToStreamerBtn = document.getElementById('switchToStreamer');
         this.switchToViewerBtn = document.getElementById('switchToViewer');
+        
+        // Play button elements
+        this.playOverlay = document.getElementById('playOverlay');
+        this.playVideoBtn = document.getElementById('playVideoBtn');
     }
 
     setupEventListeners() {
@@ -41,6 +52,16 @@ class CameraStreamApp {
         });
         this.switchToStreamerBtn.addEventListener('click', () => this.showStreamerView());
         this.switchToViewerBtn.addEventListener('click', () => this.showViewerView());
+        
+        // Play button event listener
+        this.playVideoBtn.addEventListener('click', () => this.playRemoteVideo());
+        
+        // Also try to play when user taps anywhere on the video wrapper
+        this.remoteVideo.parentElement.addEventListener('click', () => {
+            if (this.remoteVideo.srcObject && !this.remoteVideo.playing) {
+                this.playRemoteVideo();
+            }
+        });
     }
 
     setupSocket() {
@@ -49,60 +70,48 @@ class CameraStreamApp {
         });
 
         this.socket.on('connect', () => {
-            console.log('✅ Connected to server:', this.socket.id);
+            console.log('✅ Connected to server with ID:', this.socket.id);
             this.updateStatus('Connected to server', 'connected');
-        });
-
-        this.socket.on('disconnect', () => {
-            console.log('❌ Disconnected from server');
-            this.updateStatus('Disconnected from server', 'disconnected');
         });
 
         this.socket.on('stream-created', (data) => {
             console.log('✅ Stream created:', data.streamId);
-            this.updateStatus('Stream created - Share the link below', 'connected');
+            this.updateStatus('Stream active - Share the link with viewers', 'connected');
         });
 
         this.socket.on('stream-joined', (data) => {
-            console.log('✅ Joined stream:', data.streamId);
+            console.log('✅ Joined stream:', data.streamId, 'Streamer:', data.streamerId);
             this.streamerId = data.streamerId;
-            this.updateStatus('Connected to stream - Waiting for video...', 'connected');
+            this.updateStatus('Connected to stream - Setting up video...', 'connected');
         });
 
         this.socket.on('stream-not-found', (data) => {
             console.log('❌ Stream not found:', data.streamId);
-            this.updateStatus('Stream not found - Check Stream ID', 'disconnected');
-            alert('Stream not found. Please check the Stream ID and make sure the streamer is online.');
+            this.updateStatus('Stream not found', 'disconnected');
         });
 
         this.socket.on('viewer-joined', (data) => {
             console.log('👀 Viewer joined:', data.viewerId);
             this.viewerCount.textContent = data.viewerCount;
+            this.viewerId = data.viewerId;
         });
 
-        this.socket.on('viewer-left', (data) => {
-            console.log('🚪 Viewer left:', data.viewerId);
-            this.viewerCount.textContent = data.viewerCount;
+        this.socket.on('create-offer', async (data) => {
+            console.log('📨 Request to create offer for viewer:', data.viewerId);
+            if (this.isStreamer) {
+                await this.createOfferForViewer(data.viewerId);
+            }
         });
 
-        this.socket.on('stream-ended', () => {
-            console.log('🛑 Stream ended by host');
-            this.updateStatus('Stream ended by host', 'disconnected');
-            this.remoteVideo.srcObject = null;
-            this.noStreamMessage.classList.remove('hidden');
-            alert('The stream has ended. The host stopped streaming.');
-        });
-
-        // WebRTC signaling
         this.socket.on('offer', async (data) => {
-            console.log('📨 Received offer from:', data.from);
+            console.log('📨 Received offer from streamer:', data.from);
             if (!this.isStreamer) {
                 await this.handleOffer(data);
             }
         });
 
         this.socket.on('answer', async (data) => {
-            console.log('📨 Received answer from:', data.from);
+            console.log('📨 Received answer from viewer:', data.from);
             if (this.isStreamer) {
                 await this.handleAnswer(data);
             }
@@ -112,19 +121,26 @@ class CameraStreamApp {
             console.log('❄️ Received ICE candidate from:', data.from);
             await this.handleIceCandidate(data);
         });
+
+        this.socket.on('stream-ended', () => {
+            console.log('🛑 Stream ended by host');
+            this.updateStatus('Stream ended', 'disconnected');
+            this.remoteVideo.srcObject = null;
+            this.noStreamMessage.classList.remove('hidden');
+            this.playOverlay.classList.add('hidden');
+        });
     }
 
     async startStreaming() {
         try {
-            console.log('🎥 Starting stream...');
-            this.updateStatus('Accessing camera...', 'connected');
+            this.updateStatus('Starting camera...', 'connected');
             
-            // Access camera
+            // Access camera with simpler constraints
             this.localStream = await navigator.mediaDevices.getUserMedia({
                 video: {
-                    width: { ideal: 1280 },
-                    height: { ideal: 720 },
-                    frameRate: { ideal: 30 }
+                    width: { ideal: 640 },
+                    height: { ideal: 480 },
+                    frameRate: { ideal: 24 }
                 },
                 audio: true
             });
@@ -137,14 +153,6 @@ class CameraStreamApp {
             // Create stream on server
             this.socket.emit('create-stream', this.currentStreamId);
 
-            // Create peer connection for streamer
-            await this.createPeerConnection();
-            
-            // Add local stream to peer connection
-            this.localStream.getTracks().forEach(track => {
-                this.peerConnection.addTrack(track, this.localStream);
-            });
-
             // Update UI
             this.startStreamBtn.classList.add('hidden');
             this.stopStreamBtn.classList.remove('hidden');
@@ -154,7 +162,7 @@ class CameraStreamApp {
             this.streamLink.parentElement.parentElement.classList.remove('hidden');
             
             this.viewerCount.textContent = '0';
-            this.updateStatus('Streaming live - Share the link with viewers', 'connected');
+            this.updateStatus('Streaming live - Waiting for viewers...', 'connected');
             
             this.isStreamer = true;
 
@@ -168,8 +176,6 @@ class CameraStreamApp {
     }
 
     stopStreaming() {
-        console.log('🛑 Stopping stream...');
-        
         if (this.localStream) {
             this.localStream.getTracks().forEach(track => track.stop());
             this.localStream = null;
@@ -186,8 +192,6 @@ class CameraStreamApp {
         this.streamLink.parentElement.parentElement.classList.add('hidden');
         this.updateStatus('Stream ended', 'disconnected');
         this.isStreamer = false;
-
-        console.log('✅ Stream stopped');
     }
 
     async joinStream() {
@@ -201,22 +205,36 @@ class CameraStreamApp {
         this.currentStreamId = streamId;
         this.updateStatus('Connecting to stream...', 'connected');
         
-        // First check if stream exists via API
-        try {
-            const response = await fetch(`/api/stream/${streamId}`);
-            const data = await response.json();
-            
-            if (!data.exists) {
-                this.updateStatus('Stream not found', 'disconnected');
-                alert('Stream not found. Please check the Stream ID and make sure the streamer is online.');
-                return;
-            }
-        } catch (error) {
-            console.error('Error checking stream:', error);
-        }
-
-        // Join via socket
         this.socket.emit('join-stream', streamId);
+    }
+
+    async createOfferForViewer(viewerId) {
+        try {
+            console.log('🎯 Creating offer for viewer:', viewerId);
+            
+            if (!this.peerConnection) {
+                await this.createPeerConnection();
+                
+                // Add all tracks from local stream
+                this.localStream.getTracks().forEach(track => {
+                    this.peerConnection.addTrack(track, this.localStream);
+                });
+            }
+
+            const offer = await this.peerConnection.createOffer();
+            await this.peerConnection.setLocalDescription(offer);
+            
+            console.log('📤 Sending offer to viewer:', viewerId);
+            
+            this.socket.emit('offer', {
+                offer: offer,
+                targetViewerId: viewerId,
+                streamId: this.currentStreamId
+            });
+
+        } catch (error) {
+            console.error('❌ Error creating offer:', error);
+        }
     }
 
     async createPeerConnection() {
@@ -225,9 +243,9 @@ class CameraStreamApp {
         const configuration = {
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' },
-                { urls: 'stun:stun2.l.google.com:19302' }
-            ]
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ],
+            iceCandidatePoolSize: 10
         };
 
         this.peerConnection = new RTCPeerConnection(configuration);
@@ -235,66 +253,138 @@ class CameraStreamApp {
         // Handle ICE candidates
         this.peerConnection.onicecandidate = (event) => {
             if (event.candidate) {
-                console.log('❄️ Sending ICE candidate');
-                this.socket.emit('ice-candidate', {
-                    candidate: event.candidate,
-                    streamId: this.currentStreamId
-                });
+                const target = this.isStreamer ? this.viewerId : this.streamerId;
+                if (target) {
+                    this.socket.emit('ice-candidate', {
+                        candidate: event.candidate,
+                        target: target,
+                        streamId: this.currentStreamId
+                    });
+                }
             }
         };
 
-        // Handle connection state changes
+        // Handle connection state
         this.peerConnection.onconnectionstatechange = () => {
             console.log('🔗 Connection state:', this.peerConnection.connectionState);
             this.updateStatus(`Connection: ${this.peerConnection.connectionState}`, 'connected');
             
             if (this.peerConnection.connectionState === 'connected') {
                 console.log('✅ Peer connection established!');
-                this.updateStatus('Connected - Streaming active', 'connected');
+                this.updateStatus('Connected - Tap play to start video', 'connected');
             }
         };
 
         // Handle track events (for viewer)
         this.peerConnection.ontrack = (event) => {
-            console.log('🎬 Received remote track');
-            this.remoteVideo.srcObject = event.streams[0];
-            this.noStreamMessage.classList.add('hidden');
-            this.updateStatus('Connected - Watching live stream', 'connected');
+            console.log('🎬 Received remote track, streams:', event.streams.length);
+            if (event.streams && event.streams[0]) {
+                this.remoteVideo.srcObject = event.streams[0];
+                this.noStreamMessage.classList.add('hidden');
+                this.updateStatus('Connected - Tap the play button to start video', 'connected');
+                
+                // Show play button instead of auto-playing
+                this.playOverlay.classList.remove('hidden');
+                
+                // Try to play automatically if user has already interacted
+                if (this.hasUserInteracted) {
+                    setTimeout(() => {
+                        this.playRemoteVideo();
+                    }, 1000);
+                }
+            }
         };
 
         return this.peerConnection;
     }
 
+    async playRemoteVideo() {
+        try {
+            console.log('▶️ Attempting to play video...');
+            
+            // Ensure video has source
+            if (!this.remoteVideo.srcObject) {
+                console.log('❌ No video source available');
+                return;
+            }
+            
+            // Set muted to help with autoplay restrictions
+            this.remoteVideo.muted = true;
+            
+            // Try to play
+            await this.remoteVideo.play();
+            
+            // If successful, hide the play button
+            this.playOverlay.classList.add('hidden');
+            this.updateStatus('Connected - Watching live stream', 'connected');
+            
+            console.log('✅ Video playback started successfully');
+            
+            // After successful play, try to unmute if needed
+            setTimeout(() => {
+                if (this.remoteVideo.muted) {
+                    this.remoteVideo.muted = false;
+                }
+            }, 1000);
+            
+        } catch (error) {
+            console.error('❌ Error playing video:', error);
+            this.updateStatus('Tap play button to start video', 'connected');
+            
+            // Show specific error message to user
+            if (error.name === 'NotAllowedError') {
+                this.playOverlay.classList.remove('hidden');
+                this.playVideoBtn.textContent = '▶️ Tap to Play Video (Browser blocked autoplay)';
+            }
+        }
+    }
+
     async handleOffer(data) {
-        console.log('📨 Handling offer from streamer');
-        
-        await this.createPeerConnection();
+        try {
+            console.log('📨 Handling offer from streamer');
+            
+            await this.createPeerConnection();
+            
+            // Set remote description
+            await this.peerConnection.setRemoteDescription(data.offer);
+            
+            // Create answer
+            const answer = await this.peerConnection.createAnswer();
+            await this.peerConnection.setLocalDescription(answer);
+            
+            // Send answer back to streamer
+            this.socket.emit('answer', {
+                answer: answer,
+                targetStreamerId: data.from,
+                streamId: this.currentStreamId
+            });
+            
+            console.log('✅ Sent answer to streamer');
 
-        await this.peerConnection.setRemoteDescription(data.offer);
-        const answer = await this.peerConnection.createAnswer();
-        await this.peerConnection.setLocalDescription(answer);
-        
-        this.socket.emit('answer', {
-            answer: answer,
-            streamId: this.currentStreamId
-        });
-
-        console.log('✅ Sent answer to streamer');
+        } catch (error) {
+            console.error('❌ Error handling offer:', error);
+        }
     }
 
     async handleAnswer(data) {
-        console.log('📨 Handling answer from viewer');
-        
-        if (this.peerConnection) {
-            await this.peerConnection.setRemoteDescription(data.answer);
+        try {
+            console.log('📨 Handling answer from viewer');
+            
+            if (this.peerConnection) {
+                await this.peerConnection.setRemoteDescription(data.answer);
+            }
+        } catch (error) {
+            console.error('❌ Error handling answer:', error);
         }
     }
 
     async handleIceCandidate(data) {
-        console.log('❄️ Handling ICE candidate');
-        
-        if (this.peerConnection && data.candidate) {
-            await this.peerConnection.addIceCandidate(data.candidate);
+        try {
+            if (this.peerConnection && data.candidate) {
+                await this.peerConnection.addIceCandidate(data.candidate);
+            }
+        } catch (error) {
+            console.error('❌ Error adding ICE candidate:', error);
         }
     }
 
@@ -302,15 +392,14 @@ class CameraStreamApp {
         this.streamerView.classList.remove('hidden');
         this.viewerView.classList.add('hidden');
         this.isStreamer = true;
-        console.log('🎥 Switched to streamer view');
+        this.hasUserInteracted = true; // Switching views counts as interaction
     }
 
     showViewerView() {
         this.streamerView.classList.add('hidden');
         this.viewerView.classList.remove('hidden');
         this.isStreamer = false;
-        console.log('👀 Switched to viewer view');
-        
+        this.hasUserInteracted = true; // Switching views counts as interaction
         this.checkUrlForStreamId();
     }
 
@@ -323,7 +412,7 @@ class CameraStreamApp {
             // Auto-join after a short delay
             setTimeout(() => {
                 this.joinStream();
-            }, 1000);
+            }, 500);
         }
     }
 
@@ -343,7 +432,7 @@ class CameraStreamApp {
     }
 }
 
-// Initialize the app when the page loads
+// Initialize the app
 document.addEventListener('DOMContentLoaded', () => {
     console.log('🚀 Initializing Camera Stream App...');
     window.cameraApp = new CameraStreamApp();

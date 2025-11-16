@@ -212,6 +212,57 @@ video {
     margin: 0 10px;
 }
 
+
+/* Add these to your existing CSS */
+
+.play-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 20;
+}
+
+.play-btn {
+    padding: 20px 30px;
+    font-size: 18px;
+    border-radius: 50px;
+    background: rgba(0, 123, 255, 0.9);
+    border: 3px solid white;
+    color: white;
+    font-weight: bold;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.play-btn:hover {
+    background: rgba(0, 86, 179, 0.9);
+    transform: scale(1.05);
+}
+
+/* Ensure video container has proper positioning */
+.video-wrapper {
+    background: #000;
+    border-radius: 10px;
+    overflow: hidden;
+    position: relative;
+    max-width: 800px;
+    margin: 0 auto;
+}
+
+/* Make sure the play button is visible on mobile */
+@media (max-width: 768px) {
+    .play-btn {
+        padding: 15px 25px;
+        font-size: 16px;
+    }
+}
+
 @media (max-width: 768px) {
     .container {
         padding: 15px;

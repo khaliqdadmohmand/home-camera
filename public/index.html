@@ -46,9 +46,13 @@
             <div class="video-container">
                 <div class="video-wrapper">
                     <h3>Live Stream</h3>
-                    <video id="remoteVideo" autoplay playsinline></video>
+                    <video id="remoteVideo" playsinline></video>
                     <div id="noStreamMessage" class="no-stream">
                         <p>Enter a Stream ID to start watching</p>
+                    </div>
+                    <!-- Add play button overlay -->
+                    <div id="playOverlay" class="play-overlay hidden">
+                        <button id="playVideoBtn" class="btn btn-primary play-btn">▶️ Tap to Play Video</button>
                     </div>
                 </div>
             </div>
