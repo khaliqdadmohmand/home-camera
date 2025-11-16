@@ -8,13 +8,14 @@ class CameraStreamApp {
         this.streamerId = null;
         this.viewerId = null;
         this.hasUserInteracted = false;
+        this.reconnectAttempts = 0;
+        this.maxReconnectAttempts = 5;
         
         this.initializeElements();
         this.setupEventListeners();
         this.setupSocket();
         this.checkUrlForStreamId();
         
-        // Add global click handler for user interaction
         document.addEventListener('click', () => {
             this.hasUserInteracted = true;
         }, { once: true });
@@ -37,7 +38,6 @@ class CameraStreamApp {
         this.switchToStreamerBtn = document.getElementById('switchToStreamer');
         this.switchToViewerBtn = document.getElementById('switchToViewer');
         
-        // Play button elements
         this.playOverlay = document.getElementById('playOverlay');
         this.playVideoBtn = document.getElementById('playVideoBtn');
     }
@@ -53,10 +53,8 @@ class CameraStreamApp {
         this.switchToStreamerBtn.addEventListener('click', () => this.showStreamerView());
         this.switchToViewerBtn.addEventListener('click', () => this.showViewerView());
         
-        // Play button event listener
         this.playVideoBtn.addEventListener('click', () => this.playRemoteVideo());
         
-        // Also try to play when user taps anywhere on the video wrapper
         this.remoteVideo.parentElement.addEventListener('click', () => {
             if (this.remoteVideo.srcObject && !this.remoteVideo.playing) {
                 this.playRemoteVideo();
@@ -65,18 +63,54 @@ class CameraStreamApp {
     }
 
     setupSocket() {
-        this.socket = io({
-            transports: ['websocket', 'polling']
+        console.log('🔌 Connecting to server...');
+        
+        // Get the current host for Socket.io connection
+        const socketUrl = window.location.origin;
+        console.log('📍 Connecting to:', socketUrl);
+        
+        this.socket = io(socketUrl, {
+            transports: ['websocket', 'polling'],
+            timeout: 10000,
+            reconnectionAttempts: 5,
+            reconnectionDelay: 1000
         });
 
         this.socket.on('connect', () => {
             console.log('✅ Connected to server with ID:', this.socket.id);
             this.updateStatus('Connected to server', 'connected');
+            this.reconnectAttempts = 0;
+        });
+
+        this.socket.on('disconnect', (reason) => {
+            console.log('❌ Disconnected from server:', reason);
+            this.updateStatus('Disconnected from server', 'disconnected');
+        });
+
+        this.socket.on('connect_error', (error) => {
+            console.error('🔌 Connection error:', error);
+            this.updateStatus('Connection failed - Retrying...', 'disconnected');
+            
+            this.reconnectAttempts++;
+            if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+                this.updateStatus('Connection failed - Please refresh', 'disconnected');
+            }
+        });
+
+        this.socket.on('active-streams', (streams) => {
+            console.log('📊 Active streams from server:', streams);
         });
 
         this.socket.on('stream-created', (data) => {
             console.log('✅ Stream created:', data.streamId);
             this.updateStatus('Stream active - Share the link with viewers', 'connected');
+        });
+
+        this.socket.on('stream-exists', (data) => {
+            console.log('❌ Stream already exists:', data.streamId);
+            alert('Stream ID already exists. Please try a different one.');
+            this.startStreamBtn.classList.remove('hidden');
+            this.stopStreamBtn.classList.add('hidden');
         });
 
         this.socket.on('stream-joined', (data) => {
@@ -87,7 +121,22 @@ class CameraStreamApp {
 
         this.socket.on('stream-not-found', (data) => {
             console.log('❌ Stream not found:', data.streamId);
+            console.log('📊 Available streams:', data.availableStreams);
             this.updateStatus('Stream not found', 'disconnected');
+            
+            let message = `Stream "${data.streamId}" not found. `;
+            if (data.availableStreams && data.availableStreams.length > 0) {
+                message += `Available streams: ${data.availableStreams.join(', ')}`;
+            } else {
+                message += 'No active streams available. Make sure the streamer is online.';
+            }
+            alert(message);
+        });
+
+        this.socket.on('streamer-disconnected', (data) => {
+            console.log('❌ Streamer disconnected:', data.streamId);
+            this.updateStatus('Streamer disconnected', 'disconnected');
+            alert('The streamer has disconnected. Please try again later.');
         });
 
         this.socket.on('viewer-joined', (data) => {
@@ -122,12 +171,13 @@ class CameraStreamApp {
             await this.handleIceCandidate(data);
         });
 
-        this.socket.on('stream-ended', () => {
-            console.log('🛑 Stream ended by host');
+        this.socket.on('stream-ended', (data) => {
+            console.log('🛑 Stream ended:', data);
             this.updateStatus('Stream ended', 'disconnected');
             this.remoteVideo.srcObject = null;
             this.noStreamMessage.classList.remove('hidden');
             this.playOverlay.classList.add('hidden');
+            alert('The stream has ended. The host stopped streaming.');
         });
     }
 
@@ -135,7 +185,7 @@ class CameraStreamApp {
         try {
             this.updateStatus('Starting camera...', 'connected');
             
-            // Access camera with simpler constraints
+            // Access camera
             this.localStream = await navigator.mediaDevices.getUserMedia({
                 video: {
                     width: { ideal: 640 },
@@ -149,6 +199,8 @@ class CameraStreamApp {
 
             // Generate stream ID
             this.currentStreamId = this.generateStreamId();
+            
+            console.log('🎥 Creating stream with ID:', this.currentStreamId);
             
             // Create stream on server
             this.socket.emit('create-stream', this.currentStreamId);
@@ -166,32 +218,11 @@ class CameraStreamApp {
             
             this.isStreamer = true;
 
-            console.log('✅ Streaming started with ID:', this.currentStreamId);
-
         } catch (error) {
             console.error('❌ Error starting stream:', error);
             this.updateStatus(`Error: ${error.message}`, 'disconnected');
             alert('Error accessing camera: ' + error.message);
         }
-    }
-
-    stopStreaming() {
-        if (this.localStream) {
-            this.localStream.getTracks().forEach(track => track.stop());
-            this.localStream = null;
-            this.localVideo.srcObject = null;
-        }
-
-        if (this.peerConnection) {
-            this.peerConnection.close();
-            this.peerConnection = null;
-        }
-
-        this.startStreamBtn.classList.remove('hidden');
-        this.stopStreamBtn.classList.add('hidden');
-        this.streamLink.parentElement.parentElement.classList.add('hidden');
-        this.updateStatus('Stream ended', 'disconnected');
-        this.isStreamer = false;
     }
 
     async joinStream() {
@@ -205,8 +236,31 @@ class CameraStreamApp {
         this.currentStreamId = streamId;
         this.updateStatus('Connecting to stream...', 'connected');
         
-        this.socket.emit('join-stream', streamId);
+        // First check if stream exists via API
+        try {
+            console.log('🔍 Checking if stream exists via API...');
+            const response = await fetch(`/api/stream/${streamId}`);
+            const data = await response.json();
+            
+            console.log('🔍 Stream check result:', data);
+            
+            if (!data.exists) {
+                this.updateStatus('Stream not found', 'disconnected');
+                alert(`Stream "${streamId}" not found. Please check the Stream ID and make sure the streamer is online.`);
+                return;
+            }
+            
+            console.log('✅ Stream exists, joining via socket...');
+            this.socket.emit('join-stream', streamId);
+            
+        } catch (error) {
+            console.error('❌ Error checking stream:', error);
+            // If API check fails, try joining anyway
+            this.socket.emit('join-stream', streamId);
+        }
     }
+
+    // ... rest of the methods remain the same as previous version ...
 
     async createOfferForViewer(viewerId) {
         try {
@@ -215,7 +269,6 @@ class CameraStreamApp {
             if (!this.peerConnection) {
                 await this.createPeerConnection();
                 
-                // Add all tracks from local stream
                 this.localStream.getTracks().forEach(track => {
                     this.peerConnection.addTrack(track, this.localStream);
                 });
@@ -244,13 +297,11 @@ class CameraStreamApp {
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
                 { urls: 'stun:stun1.l.google.com:19302' }
-            ],
-            iceCandidatePoolSize: 10
+            ]
         };
 
         this.peerConnection = new RTCPeerConnection(configuration);
 
-        // Handle ICE candidates
         this.peerConnection.onicecandidate = (event) => {
             if (event.candidate) {
                 const target = this.isStreamer ? this.viewerId : this.streamerId;
@@ -264,7 +315,6 @@ class CameraStreamApp {
             }
         };
 
-        // Handle connection state
         this.peerConnection.onconnectionstatechange = () => {
             console.log('🔗 Connection state:', this.peerConnection.connectionState);
             this.updateStatus(`Connection: ${this.peerConnection.connectionState}`, 'connected');
@@ -275,7 +325,6 @@ class CameraStreamApp {
             }
         };
 
-        // Handle track events (for viewer)
         this.peerConnection.ontrack = (event) => {
             console.log('🎬 Received remote track, streams:', event.streams.length);
             if (event.streams && event.streams[0]) {
@@ -283,10 +332,8 @@ class CameraStreamApp {
                 this.noStreamMessage.classList.add('hidden');
                 this.updateStatus('Connected - Tap the play button to start video', 'connected');
                 
-                // Show play button instead of auto-playing
                 this.playOverlay.classList.remove('hidden');
                 
-                // Try to play automatically if user has already interacted
                 if (this.hasUserInteracted) {
                     setTimeout(() => {
                         this.playRemoteVideo();
@@ -302,25 +349,19 @@ class CameraStreamApp {
         try {
             console.log('▶️ Attempting to play video...');
             
-            // Ensure video has source
             if (!this.remoteVideo.srcObject) {
                 console.log('❌ No video source available');
                 return;
             }
             
-            // Set muted to help with autoplay restrictions
             this.remoteVideo.muted = true;
-            
-            // Try to play
             await this.remoteVideo.play();
             
-            // If successful, hide the play button
             this.playOverlay.classList.add('hidden');
             this.updateStatus('Connected - Watching live stream', 'connected');
             
             console.log('✅ Video playback started successfully');
             
-            // After successful play, try to unmute if needed
             setTimeout(() => {
                 if (this.remoteVideo.muted) {
                     this.remoteVideo.muted = false;
@@ -331,7 +372,6 @@ class CameraStreamApp {
             console.error('❌ Error playing video:', error);
             this.updateStatus('Tap play button to start video', 'connected');
             
-            // Show specific error message to user
             if (error.name === 'NotAllowedError') {
                 this.playOverlay.classList.remove('hidden');
                 this.playVideoBtn.textContent = '▶️ Tap to Play Video (Browser blocked autoplay)';
@@ -344,15 +384,11 @@ class CameraStreamApp {
             console.log('📨 Handling offer from streamer');
             
             await this.createPeerConnection();
-            
-            // Set remote description
             await this.peerConnection.setRemoteDescription(data.offer);
             
-            // Create answer
             const answer = await this.peerConnection.createAnswer();
             await this.peerConnection.setLocalDescription(answer);
             
-            // Send answer back to streamer
             this.socket.emit('answer', {
                 answer: answer,
                 targetStreamerId: data.from,
@@ -392,14 +428,14 @@ class CameraStreamApp {
         this.streamerView.classList.remove('hidden');
         this.viewerView.classList.add('hidden');
         this.isStreamer = true;
-        this.hasUserInteracted = true; // Switching views counts as interaction
+        this.hasUserInteracted = true;
     }
 
     showViewerView() {
         this.streamerView.classList.add('hidden');
         this.viewerView.classList.remove('hidden');
         this.isStreamer = false;
-        this.hasUserInteracted = true; // Switching views counts as interaction
+        this.hasUserInteracted = true;
         this.checkUrlForStreamId();
     }
 
@@ -409,7 +445,6 @@ class CameraStreamApp {
         if (streamId) {
             this.streamIdInput.value = streamId;
             console.log('🔗 Found stream ID in URL:', streamId);
-            // Auto-join after a short delay
             setTimeout(() => {
                 this.joinStream();
             }, 500);
@@ -432,7 +467,6 @@ class CameraStreamApp {
     }
 }
 
-// Initialize the app
 document.addEventListener('DOMContentLoaded', () => {
     console.log('🚀 Initializing Camera Stream App...');
     window.cameraApp = new CameraStreamApp();
