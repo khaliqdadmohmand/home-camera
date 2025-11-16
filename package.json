@@ -16,6 +16,6 @@
     "nodemon": "^3.0.1"
   },
   "keywords": ["camera", "streaming", "webrtc", "nodejs"],
-  "author": "Your Name",
+  "author": "Khaliq Izrail Haxor",
   "license": "MIT"
 }
